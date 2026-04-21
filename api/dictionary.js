@@ -1,17 +1,12 @@
 const fetch = require("node-fetch");
 
-// ──────────────────────────────
-// API 키 & URL 설정
-// ──────────────────────────────
 const STDICT_KEY = "65CED42C4060FCCF99B9740E2D500BBC";
 const OPENDICT_KEY = "C5C54EC59709F8F7D6026BC2DB48D8FF";
 
 const STDICT_SEARCH_URL = "https://stdict.korean.go.kr/api/search.do";
 const OPENDICT_SEARCH_URL = "https://opendict.korean.go.kr/api/search";
+const OPENDICT_VIEW_URL = "https://opendict.korean.go.kr/api/view";
 
-// ──────────────────────────────
-// 안전한 JSON 파싱
-// ──────────────────────────────
 async function safeJson(res) {
   const text = await res.text();
   if (!text || text.trim() === "") return null;
@@ -22,9 +17,6 @@ async function safeJson(res) {
   }
 }
 
-// ──────────────────────────────
-// 표준국어대사전 — 최대 3개 반환
-// ──────────────────────────────
 async function searchStdict(word) {
   const url =
     `${STDICT_SEARCH_URL}?key=${STDICT_KEY}` +
@@ -39,14 +31,12 @@ async function searchStdict(word) {
   const channel = data?.channel;
   if (Number(channel?.total ?? 0) === 0) return null;
 
-  // 전체 item 배열 확보
   const items = Array.isArray(channel?.item)
     ? channel.item
     : channel?.item ? [channel.item] : [];
 
   if (items.length === 0) return null;
 
-  // 최대 3개까지 추출
   const results = items.slice(0, 3).map((item) => ({
     source: "표준국어대사전",
     word: item.word ?? word,
@@ -57,9 +47,6 @@ async function searchStdict(word) {
   return results;
 }
 
-// ──────────────────────────────
-// 우리말샘 — 최대 3개 반환
-// ──────────────────────────────
 async function searchOpendict(word) {
   const url =
     `${OPENDICT_SEARCH_URL}?key=${OPENDICT_KEY}` +
@@ -81,7 +68,6 @@ async function searchOpendict(word) {
 
   if (items.length === 0) return null;
 
-  // 최대 3개까지 추출
   const results = items.slice(0, 3).map((item) => {
     const sense = Array.isArray(item.sense) ? item.sense[0] : item.sense;
     return {
@@ -89,6 +75,7 @@ async function searchOpendict(word) {
       word: item.word ?? word,
       pos: sense?.pos ?? item?.pos ?? "",
       definition: sense?.definition ?? "",
+      target_code: item.target_code ?? null,
     };
   });
 
@@ -96,31 +83,62 @@ async function searchOpendict(word) {
 }
 
 // ──────────────────────────────
-// 우리말샘 — 용례(예문) 검색 (part=exam)
+// 예문 가져오기
+// 우리말샘 view API → channel.item.sense_info[].example_info[].example 경로
 // ──────────────────────────────
 async function fetchExamples(word) {
-  const url =
+  // ① 먼저 우리말샘 search로 target_code 확보
+  const searchUrl =
     `${OPENDICT_SEARCH_URL}?key=${OPENDICT_KEY}` +
     `&q=${encodeURIComponent(word)}` +
-    `&req_type=json&num=10&part=exam`;
+    `&req_type=json&num=10&part=word`;
 
-  const res = await fetch(url);
-  if (!res.ok) return [];
+  const searchRes = await fetch(searchUrl);
+  if (!searchRes.ok) return [];
 
-  const data = await safeJson(res);
-  if (!data) return [];
+  const searchData = await safeJson(searchRes);
+  if (!searchData) return [];
 
-  const channel = data?.channel;
-  if (Number(channel?.total ?? 0) === 0) return [];
+  const items = Array.isArray(searchData?.channel?.item)
+    ? searchData.channel.item
+    : searchData?.channel?.item ? [searchData.channel.item] : [];
 
-  const items = Array.isArray(channel?.item)
-    ? channel.item
-    : channel?.item ? [channel.item] : [];
+  if (items.length === 0) return [];
+
+  // target_code는 첫 번째 item에서 가져옴
+  const targetCode = items[0]?.target_code;
+  if (!targetCode) return [];
+
+  // ② view API 호출 → sense_info 하단의 example_info 탐색
+  const viewUrl =
+    `${OPENDICT_VIEW_URL}?key=${OPENDICT_KEY}` +
+    `&method=target_code&req_type=json&q=${targetCode}`;
+
+  const viewRes = await fetch(viewUrl);
+  if (!viewRes.ok) return [];
+
+  const viewData = await safeJson(viewRes);
+  if (!viewData) return [];
 
   const examples = [];
-  for (const item of items) {
-    if (item?.example) examples.push(item.example);
-    if (examples.length >= 3) break; // 최대 3개
+
+  // channel.item.sense_info 경로
+  const senseRaw = viewData?.channel?.item?.sense_info;
+  const senseList = Array.isArray(senseRaw)
+    ? senseRaw
+    : senseRaw ? [senseRaw] : [];
+
+  for (const sense of senseList) {
+    // sense 하단의 example_info 경로
+    const exRaw = sense?.example_info;
+    const exList = Array.isArray(exRaw)
+      ? exRaw
+      : exRaw ? [exRaw] : [];
+
+    for (const ex of exList) {
+      if (ex?.example) examples.push(ex.example);
+      if (examples.length >= 3) return examples; // 최대 3개
+    }
   }
 
   return examples;
@@ -142,10 +160,10 @@ module.exports = async (req, res) => {
   try {
     let results = null;
 
-    // ① 표준국어대사전 먼저 시도
+    // ① 표준국어대사전 먼저
     results = await searchStdict(word);
 
-    // ② 없으면 우리말샘 시도
+    // ② 없으면 우리말샘
     if (!results) {
       results = await searchOpendict(word);
     }
@@ -155,20 +173,20 @@ module.exports = async (req, res) => {
       return res.status(200).json({
         found: false,
         word: word,
-        definitions: [],  // 빈 배열
+        definitions: [],
         examples: [],
       });
     }
 
-    // ④ 예문은 우리말샘 part=exam 으로 가져옴
+    // ④ 예문: channel.item.sense_info → example_info → example 경로
     const examples = await fetchExamples(word);
 
     // ⑤ 정상 반환
     return res.status(200).json({
       found: true,
       word: word,
-      source: results[0].source,    // 어느 사전 출처인지
-      definitions: results,         // 최대 3개 배열
+      source: results[0].source,
+      definitions: results,
       examples: examples,
     });
 
