@@ -45,3 +45,13 @@ module.exports = async (req, res) => {
       `&method=target_code&req_type=json&q=${code}`;
 
     const viewRes = await fetch(url);
+    const viewData = await safeJson(viewRes);
+
+    return res.status(200).json({
+      요청URL: url,
+      item: viewData?.channel?.item ?? null,
+    });
+  }
+
+  return res.status(400).json({ error: "q 또는 code 파라미터가 필요합니다." });
+};
