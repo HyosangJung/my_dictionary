@@ -57,7 +57,7 @@ async function searchStdict(word) {
 
 // ──────────────────────────────
 // 우리말샘 검색 (part=word)
-// target_code는 우리말샘 자체 코드 사용
+// target_code는 sense 배열 안에 있음 (수정)
 // ──────────────────────────────
 async function searchOpendict(word) {
   const url =
@@ -80,31 +80,41 @@ async function searchOpendict(word) {
 
   if (items.length === 0) return null;
 
-  return items.slice(0, 3).map((item) => {
-    const sense = Array.isArray(item.sense) ? item.sense[0] : item.sense;
-    return {
-      source: "우리말샘",
-      word: item.word ?? word,
-      pos: sense?.pos ?? item?.pos ?? "",
-      definition: sense?.definition ?? "",
-      target_code: item.target_code ?? null, // 우리말샘 자체 target_code
-    };
-  });
+  // sense 배열의 첫 번째 항목에서 뜻/품사/target_code 모두 꺼냄
+  const results = [];
+  for (const item of items) {
+    const senseList = Array.isArray(item.sense)
+      ? item.sense
+      : item.sense ? [item.sense] : [];
+
+    for (const sense of senseList) {
+      results.push({
+        source: "우리말샘",
+        word: item.word ?? word,
+        pos: sense?.pos ?? "",
+        definition: sense?.definition ?? "",
+        target_code: sense?.target_code ?? null, // ← sense 안에서 꺼냄
+      });
+      if (results.length >= 3) break; // 최대 3개
+    }
+    if (results.length >= 3) break;
+  }
+
+  return results.length > 0 ? results : null;
 }
 
 // ──────────────────────────────
 // 예문 가져오기
-// 우리말샘 자체 target_code → view API
-// 실제 경로: channel.item.senseInfo.example_info[].example
+// sense[0].target_code → view API → senseInfo.example_info[].example
 // ──────────────────────────────
-async function fetchExamples(opendictTargetCode) {
-  if (!opendictTargetCode) return [];
+async function fetchExamples(targetCode) {
+  if (!targetCode) return [];
 
   const url =
     `${OPENDICT_VIEW_URL}?key=${OPENDICT_KEY}` +
     `&method=target_code` +
     `&req_type=json` +
-    `&q=${opendictTargetCode}`; // 우리말샘 자체 target_code
+    `&q=${targetCode}`;
 
   const res = await fetch(url);
   if (!res.ok) return [];
@@ -114,14 +124,13 @@ async function fetchExamples(opendictTargetCode) {
 
   const examples = [];
 
-  // 실제 확인된 경로: channel.item.senseInfo (카멜케이스!)
+  // senseInfo (카멜케이스) 경로
   const senseRaw = data?.channel?.item?.senseInfo;
   const senseList = Array.isArray(senseRaw)
     ? senseRaw
     : senseRaw ? [senseRaw] : [];
 
   for (const sense of senseList) {
-    // example_info는 스네이크케이스
     const exRaw = sense?.example_info;
     const exList = Array.isArray(exRaw)
       ? exRaw
@@ -129,7 +138,7 @@ async function fetchExamples(opendictTargetCode) {
 
     for (const ex of exList) {
       if (ex?.example) examples.push(ex.example);
-      if (examples.length >= 3) return examples; // 최대 3개
+      if (examples.length >= 3) return examples;
     }
   }
 
@@ -158,7 +167,7 @@ module.exports = async (req, res) => {
 
     if (results) {
       // 표준국어대사전에서 찾은 경우
-      // 예문용으로 우리말샘 target_code 별도 확보
+      // 예문용 target_code는 우리말샘에서 별도 확보
       const opendictResults = await searchOpendict(word);
       opendictTargetCode = opendictResults?.[0]?.target_code ?? null;
     } else {
@@ -177,7 +186,7 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ④ 우리말샘 target_code로 예문 조회
+    // ④ 우리말샘 sense target_code로 예문 조회
     const examples = await fetchExamples(opendictTargetCode);
 
     // ⑤ 정상 반환
