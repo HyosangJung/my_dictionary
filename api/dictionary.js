@@ -15,7 +15,7 @@ async function safeJson(res) {
 }
 
 // ──────────────────────────────
-// 우리말샘 검색 — 최대 4개로 확장
+// 우리말샘 검색 — 최대 5개, pos 제거
 // ──────────────────────────────
 async function searchOpendict(word) {
   const url =
@@ -47,22 +47,20 @@ async function searchOpendict(word) {
 
     for (const sense of senseList) {
       results.push({
-        source: "우리말샘",
         word: item.word ?? word,
-        pos: sense?.pos ?? "",
         definition: sense?.definition ?? "",
-        target_code: sense?.target_code ?? null,
+        target_code: sense?.target_code ?? null, // 예문 조회용 (반환 안 함)
       });
-      if (results.length >= 4) break; // ← 4개로 확장
+      if (results.length >= 5) break; // ← 5개로 확장
     }
-    if (results.length >= 4) break;   // ← 4개로 확장
+    if (results.length >= 5) break;   // ← 5개로 확장
   }
 
   return results.length > 0 ? results : null;
 }
 
 // ──────────────────────────────
-// 예문 가져오기 — 예문은 3개 유지
+// 예문 가져오기
 // ──────────────────────────────
 async function fetchExamplesByCode(targetCode) {
   if (!targetCode) return [];
@@ -94,7 +92,7 @@ async function fetchExamplesByCode(targetCode) {
 
     for (const ex of exList) {
       if (ex?.example) examples.push(ex.example);
-      if (examples.length >= 3) return examples; // 예문은 3개 유지
+      if (examples.length >= 3) return examples;
     }
   }
 
@@ -130,8 +128,7 @@ module.exports = async (req, res) => {
         const examples = await fetchExamplesByCode(def.target_code);
         return {
           word: def.word,
-          pos: def.pos,
-          definition: def.definition,
+          definition: def.definition, // pos 제거
           examples: examples,
         };
       })
