@@ -57,6 +57,7 @@ async function searchStdict(word) {
 
 // ──────────────────────────────
 // 우리말샘 검색 (part=word)
+// target_code는 우리말샘 자체 코드 사용
 // ──────────────────────────────
 async function searchOpendict(word) {
   const url =
@@ -86,25 +87,24 @@ async function searchOpendict(word) {
       word: item.word ?? word,
       pos: sense?.pos ?? item?.pos ?? "",
       definition: sense?.definition ?? "",
-      target_code: item.target_code ?? null,
+      target_code: item.target_code ?? null, // 우리말샘 자체 target_code
     };
   });
 }
 
 // ──────────────────────────────
 // 예문 가져오기
-// 우리말샘 view API에 target_code 직접 전달
-// → sense_info → example_info → example 경로
+// 우리말샘 자체 target_code → view API
+// 실제 경로: channel.item.senseInfo.example_info[].example
 // ──────────────────────────────
-async function fetchExamples(targetCode) {
-  // target_code 없으면 바로 종료
-  if (!targetCode) return [];
+async function fetchExamples(opendictTargetCode) {
+  if (!opendictTargetCode) return [];
 
   const url =
     `${OPENDICT_VIEW_URL}?key=${OPENDICT_KEY}` +
-    `&method=target_code` +   // target_code로 직접 조회
+    `&method=target_code` +
     `&req_type=json` +
-    `&q=${targetCode}`;       // target_code 값을 q에 전달
+    `&q=${opendictTargetCode}`; // 우리말샘 자체 target_code
 
   const res = await fetch(url);
   if (!res.ok) return [];
@@ -112,16 +112,16 @@ async function fetchExamples(targetCode) {
   const data = await safeJson(res);
   if (!data) return [];
 
-  // sense_info 배열 꺼내기
-  const senseRaw = data?.channel?.item?.sense_info;
+  const examples = [];
+
+  // 실제 확인된 경로: channel.item.senseInfo (카멜케이스!)
+  const senseRaw = data?.channel?.item?.senseInfo;
   const senseList = Array.isArray(senseRaw)
     ? senseRaw
     : senseRaw ? [senseRaw] : [];
 
-  const examples = [];
-
   for (const sense of senseList) {
-    // sense 하단 example_info 배열 꺼내기
+    // example_info는 스네이크케이스
     const exRaw = sense?.example_info;
     const exList = Array.isArray(exRaw)
       ? exRaw
@@ -151,20 +151,20 @@ module.exports = async (req, res) => {
 
   try {
     let results = null;
-    let targetCode = null;
+    let opendictTargetCode = null;
 
     // ① 표준국어대사전 먼저 시도
     results = await searchStdict(word);
 
     if (results) {
       // 표준국어대사전에서 찾은 경우
-      // 예문은 우리말샘 view API 기준 → 우리말샘 target_code 별도로 가져옴
+      // 예문용으로 우리말샘 target_code 별도 확보
       const opendictResults = await searchOpendict(word);
-      targetCode = opendictResults?.[0]?.target_code ?? null;
+      opendictTargetCode = opendictResults?.[0]?.target_code ?? null;
     } else {
       // ② 우리말샘 시도
       results = await searchOpendict(word);
-      targetCode = results?.[0]?.target_code ?? null;
+      opendictTargetCode = results?.[0]?.target_code ?? null;
     }
 
     // ③ 둘 다 없음
@@ -177,8 +177,8 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ④ target_code로 view API 직접 조회 → 예문 추출
-    const examples = await fetchExamples(targetCode);
+    // ④ 우리말샘 target_code로 예문 조회
+    const examples = await fetchExamples(opendictTargetCode);
 
     // ⑤ 정상 반환
     return res.status(200).json({
