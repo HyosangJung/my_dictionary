@@ -1,15 +1,9 @@
 const fetch = require("node-fetch");
 
-// ──────────────────────────────
-// API 키 & URL 설정
-// ──────────────────────────────
 const OPENDICT_KEY = "C5C54EC59709F8F7D6026BC2DB48D8FF";
 const OPENDICT_SEARCH_URL = "https://opendict.korean.go.kr/api/search";
 const OPENDICT_VIEW_URL = "https://opendict.korean.go.kr/api/view";
 
-// ──────────────────────────────
-// 안전한 JSON 파싱
-// ──────────────────────────────
 async function safeJson(res) {
   const text = await res.text();
   if (!text || text.trim() === "") return null;
@@ -21,8 +15,7 @@ async function safeJson(res) {
 }
 
 // ──────────────────────────────
-// 우리말샘 검색 (part=word)
-// sense[] 안에 target_code, pos, definition 있음
+// 우리말샘 검색 — 최대 4개로 확장
 // ──────────────────────────────
 async function searchOpendict(word) {
   const url =
@@ -58,19 +51,18 @@ async function searchOpendict(word) {
         word: item.word ?? word,
         pos: sense?.pos ?? "",
         definition: sense?.definition ?? "",
-        target_code: sense?.target_code ?? null, // 예문 조회에 사용
+        target_code: sense?.target_code ?? null,
       });
-      if (results.length >= 3) break;
+      if (results.length >= 4) break; // ← 4개로 확장
     }
-    if (results.length >= 3) break;
+    if (results.length >= 4) break;   // ← 4개로 확장
   }
 
   return results.length > 0 ? results : null;
 }
 
 // ──────────────────────────────
-// 특정 target_code의 예문 가져오기
-// view API → channel.item.senseInfo.example_info[].example
+// 예문 가져오기 — 예문은 3개 유지
 // ──────────────────────────────
 async function fetchExamplesByCode(targetCode) {
   if (!targetCode) return [];
@@ -89,7 +81,6 @@ async function fetchExamplesByCode(targetCode) {
 
   const examples = [];
 
-  // senseInfo (카멜케이스) 경로
   const senseRaw = data?.channel?.item?.senseInfo;
   const senseList = Array.isArray(senseRaw)
     ? senseRaw
@@ -103,7 +94,7 @@ async function fetchExamplesByCode(targetCode) {
 
     for (const ex of exList) {
       if (ex?.example) examples.push(ex.example);
-      if (examples.length >= 3) return examples; // 최대 3개
+      if (examples.length >= 3) return examples; // 예문은 3개 유지
     }
   }
 
@@ -124,10 +115,8 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // ① 우리말샘 검색
     const results = await searchOpendict(word);
 
-    // ② 단어 없음
     if (!results) {
       return res.status(200).json({
         found: false,
@@ -136,7 +125,6 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ③ 각 뜻의 target_code로 예문 개별 조회 (동시 호출)
     const definitionsWithExamples = await Promise.all(
       results.map(async (def) => {
         const examples = await fetchExamplesByCode(def.target_code);
@@ -144,12 +132,11 @@ module.exports = async (req, res) => {
           word: def.word,
           pos: def.pos,
           definition: def.definition,
-          examples: examples, // 각 뜻마다 예문
+          examples: examples,
         };
       })
     );
 
-    // ④ 정상 반환
     return res.status(200).json({
       found: true,
       word: word,
