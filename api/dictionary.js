@@ -37,14 +37,12 @@ async function searchStdict(word) {
 
   if (items.length === 0) return null;
 
-  const results = items.slice(0, 3).map((item) => ({
+  return items.slice(0, 3).map((item) => ({
     source: "표준국어대사전",
     word: item.word ?? word,
     pos: item.pos ?? "",
     definition: item.sense?.definition ?? "",
   }));
-
-  return results;
 }
 
 async function searchOpendict(word) {
@@ -68,7 +66,7 @@ async function searchOpendict(word) {
 
   if (items.length === 0) return null;
 
-  const results = items.slice(0, 3).map((item) => {
+  return items.slice(0, 3).map((item) => {
     const sense = Array.isArray(item.sense) ? item.sense[0] : item.sense;
     return {
       source: "우리말샘",
@@ -78,16 +76,9 @@ async function searchOpendict(word) {
       target_code: item.target_code ?? null,
     };
   });
-
-  return results;
 }
 
-// ──────────────────────────────
-// 예문 가져오기
-// 우리말샘 view API → channel.item.sense_info[].example_info[].example 경로
-// ──────────────────────────────
 async function fetchExamples(word) {
-  // ① 먼저 우리말샘 search로 target_code 확보
   const searchUrl =
     `${OPENDICT_SEARCH_URL}?key=${OPENDICT_KEY}` +
     `&q=${encodeURIComponent(word)}` +
@@ -105,11 +96,9 @@ async function fetchExamples(word) {
 
   if (items.length === 0) return [];
 
-  // target_code는 첫 번째 item에서 가져옴
   const targetCode = items[0]?.target_code;
   if (!targetCode) return [];
 
-  // ② view API 호출 → sense_info 하단의 example_info 탐색
   const viewUrl =
     `${OPENDICT_VIEW_URL}?key=${OPENDICT_KEY}` +
     `&method=target_code&req_type=json&q=${targetCode}`;
@@ -122,14 +111,12 @@ async function fetchExamples(word) {
 
   const examples = [];
 
-  // channel.item.sense_info 경로
   const senseRaw = viewData?.channel?.item?.sense_info;
   const senseList = Array.isArray(senseRaw)
     ? senseRaw
     : senseRaw ? [senseRaw] : [];
 
   for (const sense of senseList) {
-    // sense 하단의 example_info 경로
     const exRaw = sense?.example_info;
     const exList = Array.isArray(exRaw)
       ? exRaw
@@ -137,38 +124,73 @@ async function fetchExamples(word) {
 
     for (const ex of exList) {
       if (ex?.example) examples.push(ex.example);
-      if (examples.length >= 3) return examples; // 최대 3개
+      if (examples.length >= 3) return examples;
     }
   }
 
   return examples;
 }
 
-// ──────────────────────────────
-// 메인 함수
-// ──────────────────────────────
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET");
 
   const word = req.query.q;
+  const debug = req.query.debug;
 
   if (!word) {
     return res.status(400).json({ error: "검색어(q)가 없습니다." });
   }
 
+  // ──────────────────────────────
+  // 디버그: 우리말샘 search → target_code → view 원문 확인
+  // ?q=사랑&debug=view
+  // ──────────────────────────────
+  if (debug === "view") {
+    // ① target_code 가져오기
+    const searchUrl =
+      `${OPENDICT_SEARCH_URL}?key=${OPENDICT_KEY}` +
+      `&q=${encodeURIComponent(word)}` +
+      `&req_type=json&num=10&part=word`;
+
+    const searchRes = await fetch(searchUrl);
+    const searchData = await safeJson(searchRes);
+
+    const items = Array.isArray(searchData?.channel?.item)
+      ? searchData.channel.item
+      : searchData?.channel?.item ? [searchData.channel.item] : [];
+
+    const targetCode = items[0]?.target_code;
+
+    if (!targetCode) {
+      return res.status(200).json({
+        error: "target_code 없음",
+        searchData: searchData?.channel,
+      });
+    }
+
+    // ② view API 원문 그대로 반환
+    const viewUrl =
+      `${OPENDICT_VIEW_URL}?key=${OPENDICT_KEY}` +
+      `&method=target_code&req_type=json&q=${targetCode}`;
+
+    const viewRes = await fetch(viewUrl);
+    const viewData = await safeJson(viewRes);
+
+    return res.status(200).json({
+      targetCode,
+      viewUrl,
+      // channel.item 전체를 그대로 반환해서 구조 파악
+      item: viewData?.channel?.item ?? null,
+    });
+  }
+
   try {
     let results = null;
 
-    // ① 표준국어대사전 먼저
     results = await searchStdict(word);
+    if (!results) results = await searchOpendict(word);
 
-    // ② 없으면 우리말샘
-    if (!results) {
-      results = await searchOpendict(word);
-    }
-
-    // ③ 둘 다 없음
     if (!results) {
       return res.status(200).json({
         found: false,
@@ -178,10 +200,8 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ④ 예문: channel.item.sense_info → example_info → example 경로
     const examples = await fetchExamples(word);
 
-    // ⑤ 정상 반환
     return res.status(200).json({
       found: true,
       word: word,
