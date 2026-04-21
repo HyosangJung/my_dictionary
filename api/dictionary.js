@@ -8,6 +8,7 @@ const OPENDICT_KEY = "C5C54EC59709F8F7D6026BC2DB48D8FF";
 
 const STDICT_SEARCH_URL = "https://stdict.korean.go.kr/api/search.do";
 const OPENDICT_SEARCH_URL = "https://opendict.korean.go.kr/api/search";
+const OPENDICT_VIEW_URL = "https://opendict.korean.go.kr/api/view";
 
 // ──────────────────────────────
 // 안전한 JSON 파싱
@@ -23,7 +24,7 @@ async function safeJson(res) {
 }
 
 // ──────────────────────────────
-// 표준국어대사전 — 최대 3개 반환
+// 표준국어대사전 검색
 // ──────────────────────────────
 async function searchStdict(word) {
   const url =
@@ -55,7 +56,7 @@ async function searchStdict(word) {
 }
 
 // ──────────────────────────────
-// 우리말샘 — 최대 3개 반환 (part=word)
+// 우리말샘 검색 (part=word)
 // ──────────────────────────────
 async function searchOpendict(word) {
   const url =
@@ -92,14 +93,18 @@ async function searchOpendict(word) {
 
 // ──────────────────────────────
 // 예문 가져오기
-// 1. part=exam 으로 해당 단어 예문 검색
-// 2. part=word 에서 받은 target_code 와 일치하는 것만 필터링
+// 우리말샘 view API에 target_code 직접 전달
+// → sense_info → example_info → example 경로
 // ──────────────────────────────
-async function fetchExamples(word, targetCode) {
+async function fetchExamples(targetCode) {
+  // target_code 없으면 바로 종료
+  if (!targetCode) return [];
+
   const url =
-    `${OPENDICT_SEARCH_URL}?key=${OPENDICT_KEY}` +
-    `&q=${encodeURIComponent(word)}` +
-    `&req_type=json&num=100&part=exam`; // 넉넉하게 100개 받아서 필터링
+    `${OPENDICT_VIEW_URL}?key=${OPENDICT_KEY}` +
+    `&method=target_code` +   // target_code로 직접 조회
+    `&req_type=json` +
+    `&q=${targetCode}`;       // target_code 값을 q에 전달
 
   const res = await fetch(url);
   if (!res.ok) return [];
@@ -107,21 +112,25 @@ async function fetchExamples(word, targetCode) {
   const data = await safeJson(res);
   if (!data) return [];
 
-  const channel = data?.channel;
-  if (Number(channel?.total ?? 0) === 0) return [];
-
-  const items = Array.isArray(channel?.item)
-    ? channel.item
-    : channel?.item ? [channel.item] : [];
+  // sense_info 배열 꺼내기
+  const senseRaw = data?.channel?.item?.sense_info;
+  const senseList = Array.isArray(senseRaw)
+    ? senseRaw
+    : senseRaw ? [senseRaw] : [];
 
   const examples = [];
 
-  for (const item of items) {
-    // target_code가 일치하는 예문만 선택
-    if (String(item?.target_code) === String(targetCode) && item?.example) {
-      examples.push(item.example);
+  for (const sense of senseList) {
+    // sense 하단 example_info 배열 꺼내기
+    const exRaw = sense?.example_info;
+    const exList = Array.isArray(exRaw)
+      ? exRaw
+      : exRaw ? [exRaw] : [];
+
+    for (const ex of exList) {
+      if (ex?.example) examples.push(ex.example);
+      if (examples.length >= 3) return examples; // 최대 3개
     }
-    if (examples.length >= 3) break; // 최대 3개
   }
 
   return examples;
@@ -149,7 +158,7 @@ module.exports = async (req, res) => {
 
     if (results) {
       // 표준국어대사전에서 찾은 경우
-      // 예문은 우리말샘 기준이라 우리말샘 target_code 별도로 가져옴
+      // 예문은 우리말샘 view API 기준 → 우리말샘 target_code 별도로 가져옴
       const opendictResults = await searchOpendict(word);
       targetCode = opendictResults?.[0]?.target_code ?? null;
     } else {
@@ -168,10 +177,8 @@ module.exports = async (req, res) => {
       });
     }
 
-    // ④ target_code 일치하는 예문만 가져오기
-    const examples = targetCode
-      ? await fetchExamples(word, targetCode)
-      : [];
+    // ④ target_code로 view API 직접 조회 → 예문 추출
+    const examples = await fetchExamples(targetCode);
 
     // ⑤ 정상 반환
     return res.status(200).json({
