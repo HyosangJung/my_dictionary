@@ -23,7 +23,7 @@ async function safeJson(res) {
 }
 
 // ──────────────────────────────
-// 표준국어대사전 — 단어 뜻 검색
+// 표준국어대사전 — 최대 3개 반환
 // ──────────────────────────────
 async function searchStdict(word) {
   const url =
@@ -39,28 +39,32 @@ async function searchStdict(word) {
   const channel = data?.channel;
   if (Number(channel?.total ?? 0) === 0) return null;
 
-  const item = Array.isArray(channel?.item) ? channel.item[0] : channel?.item;
-  if (!item) return null;
+  // 전체 item 배열 확보
+  const items = Array.isArray(channel?.item)
+    ? channel.item
+    : channel?.item ? [channel.item] : [];
 
-  const sense = item.sense;
+  if (items.length === 0) return null;
 
-  return {
+  // 최대 3개까지 추출
+  const results = items.slice(0, 3).map((item) => ({
     source: "표준국어대사전",
     word: item.word ?? word,
     pos: item.pos ?? "",
-    definition: sense?.definition ?? "",
-  };
+    definition: item.sense?.definition ?? "",
+  }));
+
+  return results;
 }
 
 // ──────────────────────────────
-// 우리말샘 — 단어 뜻 검색 (part=word)
+// 우리말샘 — 최대 3개 반환
 // ──────────────────────────────
 async function searchOpendict(word) {
   const url =
     `${OPENDICT_SEARCH_URL}?key=${OPENDICT_KEY}` +
     `&q=${encodeURIComponent(word)}` +
-    `&req_type=json&num=10` +
-    `&part=word`;   // 어휘 검색 명시
+    `&req_type=json&num=10&part=word`;
 
   const res = await fetch(url);
   if (!res.ok) throw new Error("opendict_http_error");
@@ -71,30 +75,34 @@ async function searchOpendict(word) {
   const channel = data?.channel;
   if (Number(channel?.total ?? 0) === 0) return null;
 
-  const item = Array.isArray(channel?.item) ? channel.item[0] : channel?.item;
-  if (!item) return null;
+  const items = Array.isArray(channel?.item)
+    ? channel.item
+    : channel?.item ? [channel.item] : [];
 
-  const sense = Array.isArray(item.sense) ? item.sense[0] : item.sense;
+  if (items.length === 0) return null;
 
-  return {
-    source: "우리말샘",
-    word: item.word ?? word,
-    pos: sense?.pos ?? item?.pos ?? "",
-    definition: sense?.definition ?? "",
-  };
+  // 최대 3개까지 추출
+  const results = items.slice(0, 3).map((item) => {
+    const sense = Array.isArray(item.sense) ? item.sense[0] : item.sense;
+    return {
+      source: "우리말샘",
+      word: item.word ?? word,
+      pos: sense?.pos ?? item?.pos ?? "",
+      definition: sense?.definition ?? "",
+    };
+  });
+
+  return results;
 }
 
 // ──────────────────────────────
 // 우리말샘 — 용례(예문) 검색 (part=exam)
-// 표준국어대사전/우리말샘 모두 이걸로 예문 가져옴
 // ──────────────────────────────
 async function fetchExamples(word) {
   const url =
     `${OPENDICT_SEARCH_URL}?key=${OPENDICT_KEY}` +
     `&q=${encodeURIComponent(word)}` +
-    `&req_type=json` +
-    `&num=10` +
-    `&part=exam`;   // 용례 검색 ← 핵심
+    `&req_type=json&num=10&part=exam`;
 
   const res = await fetch(url);
   if (!res.ok) return [];
@@ -105,14 +113,13 @@ async function fetchExamples(word) {
   const channel = data?.channel;
   if (Number(channel?.total ?? 0) === 0) return [];
 
-  // 용례 검색 결과는 item마다 example 필드가 있음
-  const items = Array.isArray(channel?.item) ? channel.item : channel?.item ? [channel.item] : [];
+  const items = Array.isArray(channel?.item)
+    ? channel.item
+    : channel?.item ? [channel.item] : [];
 
   const examples = [];
   for (const item of items) {
-    if (item?.example) {
-      examples.push(item.example);
-    }
+    if (item?.example) examples.push(item.example);
     if (examples.length >= 3) break; // 최대 3개
   }
 
@@ -133,38 +140,35 @@ module.exports = async (req, res) => {
   }
 
   try {
-    let result = null;
-    let examples = [];
+    let results = null;
 
     // ① 표준국어대사전 먼저 시도
-    result = await searchStdict(word);
+    results = await searchStdict(word);
 
     // ② 없으면 우리말샘 시도
-    if (!result) {
-      result = await searchOpendict(word);
+    if (!results) {
+      results = await searchOpendict(word);
     }
 
     // ③ 둘 다 없음
-    if (!result) {
+    if (!results) {
       return res.status(200).json({
         found: false,
         word: word,
-        source: null,
-        definition: null,
+        definitions: [],  // 빈 배열
         examples: [],
       });
     }
 
-    // ④ 예문은 항상 우리말샘 part=exam 으로 가져옴
-    examples = await fetchExamples(word);
+    // ④ 예문은 우리말샘 part=exam 으로 가져옴
+    const examples = await fetchExamples(word);
 
     // ⑤ 정상 반환
     return res.status(200).json({
       found: true,
-      word: result.word,
-      pos: result.pos,
-      source: result.source,
-      definition: result.definition,
+      word: word,
+      source: results[0].source,    // 어느 사전 출처인지
+      definitions: results,         // 최대 3개 배열
       examples: examples,
     });
 
