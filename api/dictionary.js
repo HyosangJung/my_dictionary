@@ -104,7 +104,7 @@ function cleanText(str) {
 module.exports = async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET");
-
+  res.setHeader("Content-Type", "application/json; charset=utf-8"); 
   const word = req.query.q;
   const plain = req.query.plain === "true";
 
